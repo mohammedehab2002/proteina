@@ -216,7 +216,7 @@ def main(args):
  
     if args.save_probs:
         if not os.path.exists(base_folder + 'probs'):
-            os.makedirs(base_folder + 'probs') 
+            os.makedirs(base_folder + 'probs')
     
     # Timing
     start_time = time.time()
@@ -234,6 +234,7 @@ def main(args):
             S_sample_list = []
             batch_clones = [copy.deepcopy(protein) for i in range(BATCH_COPIES)]
             X, S, mask, lengths, chain_M, chain_encoding_all, chain_list_list, visible_list_list, masked_list_list, masked_chain_length_list_list, chain_M_pos, omit_AA_mask, residue_idx, dihedral_mask, tied_pos_list_of_lists_list, pssm_coef, pssm_bias, pssm_log_odds_all, bias_by_res_all, tied_beta = tied_featurize(batch_clones, device, chain_id_dict, fixed_positions_dict, omit_AA_dict, tied_positions_dict, pssm_dict, bias_by_res_dict, ca_only=args.ca_only)
+
             pssm_log_odds_mask = (pssm_log_odds_all > args.pssm_threshold).float() #1.0 for true, 0.0 for false
             name_ = batch_clones[0]['name']
             if args.score_only:
@@ -326,7 +327,42 @@ def main(args):
                             randn_2 = torch.randn(chain_M.shape, device=X.device)
                             if tied_positions_dict == None:
                                 sample_dict = model.sample(X, randn_2, S, chain_M, chain_encoding_all, residue_idx, mask=mask, temperature=temp, omit_AAs_np=omit_AAs_np, bias_AAs_np=bias_AAs_np, chain_M_pos=chain_M_pos, omit_AA_mask=omit_AA_mask, pssm_coef=pssm_coef, pssm_bias=pssm_bias, pssm_multi=args.pssm_multi, pssm_log_odds_flag=bool(args.pssm_log_odds_flag), pssm_log_odds_mask=pssm_log_odds_mask, pssm_bias_flag=bool(args.pssm_bias_flag), bias_by_res=bias_by_res_all)
+                                print("X",X)
+                                print("S",S)
+                                print("mask",mask)
+                                print("chain_M",chain_M)
+                                print("chain_encoding_all",chain_encoding_all)
+                                print("residue_idx",residue_idx)
+                                print("omit_AAs_np",omit_AAs_np)
+                                print("bias_AAs_np",bias_AAs_np)
+                                print("chain_M_pos",chain_M_pos)
+                                print("omit_AA_mask",omit_AA_mask)
+                                print("pssm_coef",pssm_coef)
+                                print("pssm_bias",pssm_bias)
+                                print("pssm_multi",args.pssm_multi)
+                                print("pssm_log_odds_flag",bool(args.pssm_log_odds_flag))
+                                print("pssm_log_odds_mask",pssm_log_odds_mask)
+                                print("pssm_bias_flag",bool(args.pssm_bias_flag))
+                                print("bias_by_res",bias_by_res_all)
+                                print("X",X.shape)
+                                print("S",S.shape)
+                                print("mask",mask.shape)
+                                print("chain_M",chain_M.shape)
+                                print("chain_encoding_all",chain_encoding_all.shape)
+                                print("residue_idx",residue_idx.shape)
+                                print("omit_AAs_np",omit_AAs_np.shape)
+                                print("bias_AAs_np",bias_AAs_np.shape)
+                                print("chain_M_pos",chain_M_pos.shape)
+                                print("omit_AA_mask",omit_AA_mask.shape)
+                                print("pssm_coef",pssm_coef.shape)
+                                print("pssm_bias",pssm_bias.shape)
+                                print("pssm_multi",args.pssm_multi)
+                                print("pssm_log_odds_flag",bool(args.pssm_log_odds_flag))
+                                print("pssm_log_odds_mask",pssm_log_odds_mask.shape)
+                                print("pssm_bias_flag",bool(args.pssm_bias_flag))
+                                print("bias_by_res",bias_by_res_all.shape)
                                 S_sample = sample_dict["S"] 
+                                print(sample_dict)
                             else:
                                 sample_dict = model.tied_sample(X, randn_2, S, chain_M, chain_encoding_all, residue_idx, mask=mask, temperature=temp, omit_AAs_np=omit_AAs_np, bias_AAs_np=bias_AAs_np, chain_M_pos=chain_M_pos, omit_AA_mask=omit_AA_mask, pssm_coef=pssm_coef, pssm_bias=pssm_bias, pssm_multi=args.pssm_multi, pssm_log_odds_flag=bool(args.pssm_log_odds_flag), pssm_log_odds_mask=pssm_log_odds_mask, pssm_bias_flag=bool(args.pssm_bias_flag), tied_pos=tied_pos_list_of_lists_list[0], tied_beta=tied_beta, bias_by_res=bias_by_res_all)
                             # Compute scores

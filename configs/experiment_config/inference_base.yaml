@@ -6,16 +6,16 @@ ncpus_: 24
 seed: 5
 
 # Lengths to sample. Uses `nres_lens` if specified, otherwise arange(min_len, max_len+1, step)
-nres_lens: [50, 100, 150, 200, 250]
+nres_lens: [50]
 min_len:
 max_len:
 step_len:
 
 # Number of samples per protein length
-nsamples_per_len: 100
+nsamples_per_len: 1
 
 # Maximum number of samples in each batch
-max_nsamples: 5
+max_nsamples: 20
 
 # Sampling
 dt: 0.0025

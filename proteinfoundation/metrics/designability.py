@@ -88,9 +88,7 @@ def run_proteinmpnn(
     """
     name = pdb_name_from_path(pdb_file_path)
 
-    python_exec = os.environ.get("PYTHON_EXEC")
-    if python_exec is None:
-        python_exec = "python"
+    python_exec = "python3"
 
     command = f"""
     {python_exec} ./ProteinMPNN/protein_mpnn_run.py \
@@ -165,20 +163,16 @@ def run_and_store_esm(
     Returns:
         List of paths (list of str) to PDB files
     """
-    is_cluster_run = os.environ.get("SLURM_JOB_ID") is not None
-    cache_dir = None
-    if is_cluster_run:
-        cache_dir = os.environ.get("CACHE_DIR")
+    local_dir = "/home/gridsan/mmorsy/proteins_project/models--facebook--esmfold_v1/snapshots/75a3841ee059df2bf4d56688166c8fb459ddd97a"
     tokenizer = AutoTokenizer.from_pretrained(
-        "facebook/esmfold_v1", cache_dir=cache_dir
+        local_dir, local_files_only=True
     )
     esm_model = EsmForProteinFolding.from_pretrained(
-        "facebook/esmfold_v1", cache_dir=cache_dir
+        local_dir, local_files_only=True
     )
     esm_model = esm_model.cuda()
 
     # Run ESMFold
-    len(seqs)
     max_nres = max([len(x) for x in seqs])
     list_of_strings_pdb = []
     if max_nres > 700:
@@ -340,3 +334,9 @@ def scRMSD(
     if ret_min:
         return min(results)
     return results
+
+if __name__ == "__main__":
+    # Example usage
+    pdb_file_path = "./inference/inference_ucond_200m_tri/n_50_id_0/n_50_id_0.pdb"
+    tmp_path = "./inference/inference_ucond_200m_tri/n_50_id_0/"
+    print(scRMSD(pdb_file_path))

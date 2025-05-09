@@ -485,7 +485,7 @@ class ModelTrainerBase(L.LightningModule):
             fixed_sequence_mask = None
 
 
-        x = self.generate(
+        x, log_likelihood = self.generate(
             nsamples=batch["nsamples"],
             n=batch["nres"],
             dt=batch["dt"].to(dtype=torch.float32),
@@ -507,7 +507,7 @@ class ModelTrainerBase(L.LightningModule):
             fixed_sequence_mask = fixed_sequence_mask,
             fixed_structure_mask = fixed_structure_mask,
         )
-        return self.samples_to_atom37(x)  # [b, n, 37, 3]
+        return self.samples_to_atom37(x), log_likelihood  # [b, n, 37, 3], [b]
 
     def generate(
         self,

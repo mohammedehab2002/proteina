@@ -379,15 +379,15 @@ class PairReprUpdate(torch.nn.Module):
         pair_rep = self._apply_mask(pair_rep, pair_mask)  # [b, n, n, pair_dim]
         if self.use_tri_mult:
             pair_rep = pair_rep + checkpoint(
-                self.tri_mult_out, *(pair_rep, pair_mask * 1.0)
+                self.tri_mult_out, *(pair_rep, pair_mask * 1.0), use_reentrant = False
             )
             pair_rep = self._apply_mask(pair_rep, pair_mask)  # [b, n, n, pair_dim]
             pair_rep = pair_rep + checkpoint(
-                self.tri_mult_in, *(pair_rep, pair_mask * 1.0)
+                self.tri_mult_in, *(pair_rep, pair_mask * 1.0), use_reentrant = False
             )
             pair_rep = self._apply_mask(pair_rep, pair_mask)  # [b, n, n, pair_dim]
         pair_rep = pair_rep + checkpoint(
-            self.transition_out, *(pair_rep, pair_mask * 1.0)
+            self.transition_out, *(pair_rep, pair_mask * 1.0), use_reentrant = False
         )
         pair_rep = self._apply_mask(pair_rep, pair_mask)  # [b, n, n, pair_dim]
         return pair_rep

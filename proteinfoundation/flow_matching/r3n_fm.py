@@ -205,7 +205,8 @@ class R3NFlowMatcher:
         sc_scale_noise: float,
         sc_scale_score: float,
         mask: Optional[Bool[Tensor, "* n"]] = None,
-    ) -> Tuple[Float[Tensor, "* n 3"], Float[Tensor, "*"]]:
+        log_likelihood: Optional[Float[Tensor, "* n 3"]] = None,
+    ) -> Tuple[Float[Tensor, "* n 3"], Float[Tensor, "*"], Float[Tensor, "*"]]:
         """
         Single integration step of ODE \dot{x_t} = v(x_t, t) using Euler integration scheme.
 
@@ -231,7 +232,7 @@ class R3NFlowMatcher:
         # Euler step
         t_ext = self._extend_t(n, t)  # [*, n]
 
-        x_t_updated, _ = self.step_euler(
+        x_t_updated, _, log_likelihood_updated = self.step_euler(
             x_t=x_t,
             v=v,
             t=t_ext,
@@ -240,6 +241,7 @@ class R3NFlowMatcher:
             sampling_mode=sampling_mode,
             sc_scale_noise=sc_scale_noise,
             sc_scale_score=sc_scale_score,
+            log_likelihood=log_likelihood,
         )
 
         return (
@@ -247,6 +249,7 @@ class R3NFlowMatcher:
                 x_t_updated, mask
             ),  # Equivalent to centering the update vector since x_t is centered
             t + dt,
+            log_likelihood_updated,
         )
 
     def step_euler(
@@ -259,7 +262,8 @@ class R3NFlowMatcher:
         sampling_mode: Literal["vf", "sc"],
         sc_scale_noise: float,
         sc_scale_score: float,
-    ) -> tuple[Float[Tensor, "* n 3"], Float[Tensor, "* n"]]:
+        log_likelihood: Optional[Float[Tensor, "* n 3"]] = None,
+    ) -> tuple[Float[Tensor, "* n 3"], Float[Tensor, "* n"], Float[Tensor, "*"]]:
         """
         Single integration step of ODE
 
@@ -322,16 +326,23 @@ class R3NFlowMatcher:
         # The last few steps are always taken with eq. (1).
 
         if (
-            sampling_mode == "vf" or t_element > 1.0
+            sampling_mode != "sc" or t_element > 1.0
         ):
-            return x_t + v * dt, t + dt
+            if sampling_mode == "vfl":
+                eps = torch.randn_like(x_t)  # [*, n, 3]
+                fn_eps = torch.sum(v * eps)
+                grad_fn_eps = torch.autograd.grad(fn_eps, x_t)[0]
+                div = torch.sum(grad_fn_eps * eps, dim=tuple(range(1, len(x_t.shape))))
+            else:
+                div = 0
+            return x_t + v * dt, t + dt, log_likelihood - div * dt
 
         if sampling_mode == "sc":
             score = self.vf_to_score(x_t, v, t)  # get score from v, [*, dim]
             eps = torch.randn(x_t.shape, dtype=x_t.dtype, device=x_t.device)  # [*, dim]
             std_eps = torch.sqrt(2 * gt * sc_scale_noise * dt)
             delta_x = (v + gt * score) * dt + std_eps * eps
-            return x_t + delta_x, t + dt
+            return x_t + delta_x, t + dt, log_likelihood
 
     def vf_to_score(
         self,
@@ -482,18 +493,22 @@ class R3NFlowMatcher:
             clamp_val=gt_clamp_val,
         )
 
-        with torch.no_grad():
-            x = self.sample_reference(
-                n, shape=(nsamples,), device=device, mask=mask, dtype=dtype
-            )  # [nsamples, n, 3]
-            
-            if fixed_sequence_mask is not None:
-                x_motif = (x_motif - mean_w_mask(x_motif, fixed_sequence_mask, keepdim=True)) * fixed_sequence_mask[..., None]
-                
+        x = self.sample_reference(
+            n, shape=(nsamples,), device=device, mask=mask, dtype=dtype
+        )  # [nsamples, n, 3]
+
+        log_likelihood = -1/2 * torch.norm(x, dim=(-2, -1)) - 3/2 * n * math.log(2 * math.pi)
+        
+        if fixed_sequence_mask is not None:
+            x_motif = (x_motif - mean_w_mask(x_motif, fixed_sequence_mask, keepdim=True)) * fixed_sequence_mask[..., None]
+        
+        with torch.set_grad_enabled(sampling_mode == 'vfl'):
             for step in tqdm(range(nsteps)):
                 t = ts[step] * torch.ones(nsamples, device=device)  # [nsamples]
                 dt = ts[step + 1] - ts[step]  # float
                 gt_step = gt[step]  # float
+
+                x.requires_grad_(True)
 
 
                 if fixed_structure_mask is None:
@@ -520,13 +535,13 @@ class R3NFlowMatcher:
                 x_1_pred, v = predict_clean_n_v(nn_in)
 
                 # Accomodate last few steps
-                if ts[step] > 0.99:
+                if ts[step] > 0.99 and sampling_mode == 'sc':
                     sampling_mode = "vf"
                 if schedule_mode in ["cos_sch_v_snr", "edm"]:
-                    if ts[step] > 0.985:
+                    if ts[step] > 0.985 and sampling_mode == 'sc':
                         sampling_mode = "vf"
 
-                x, _ = self.simulation_step(
+                x_new, _, log_likelihood = self.simulation_step(
                     x_t=x,
                     v=v,
                     t=t,
@@ -536,8 +551,15 @@ class R3NFlowMatcher:
                     sc_scale_noise=sc_scale_noise,
                     sc_scale_score=sc_scale_score,
                     mask=mask,
+                    log_likelihood=log_likelihood,
                 )
-            return x
+
+                x = x_new.detach()
+                log_likelihood = log_likelihood.detach()
+            
+            print(torch.cuda.memory_summary(device='cuda:0', abbreviated=False))
+
+        return x, log_likelihood
 
     def get_gt(
         self,

@@ -82,7 +82,7 @@ def kabsch_align(mobile, target, mask=None):
         mobile_aligned: mobile point cloud aligned to target, shape [b, n, 3]
     """
     if mask is None:
-        mask = torch.ones(mobile.shape[:-1]).bool()  # [b, n] all True
+        mask = torch.ones(mobile.shape[:-1], device = mobile.device).bool()  # [b, n] all True
 
     mean_mobile = mean_w_mask(mobile, mask, keepdim=True)
     mean_target = mean_w_mask(target, mask, keepdim=True)
