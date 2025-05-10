@@ -55,11 +55,13 @@ class ModelTrainerBase(L.LightningModule):
 
         self.base_model = None
 
+        self.automatic_optimization = False
+
     def configure_optimizers(self):
-        self.params = [p for p in self.parameters() if p.requires_grad]
         optimizer = torch.optim.Adam(
-            self.params, lr=self.cfg_exp.opt.lr
+            [p for p in self.parameters() if p.requires_grad], lr=1e-5
         )
+
         return optimizer
 
     def _nn_out_to_x_clean(self, nn_out, batch):
@@ -226,158 +228,161 @@ class ModelTrainerBase(L.LightningModule):
                 f"Sampling mode for t {self.cfg_exp.loss.t_distribution.name} not implemented"
             )
 
+    # def training_step(self, batch, batch_idx):
+    #     """
+    #     Computes training loss for batch of samples.
+
+    #     Args:
+    #         batch: Data batch.
+
+    #     Returns:
+    #         Training loss averaged over batches.
+    #     """
+    #     val_step = batch_idx == -1  # validation step is indicated with batch_idx -1
+    #     log_prefix = "validation_loss" if val_step else "train"
+        
+    #     # Extract inputs from batch (our dataloader)
+    #     # This may apply augmentations, if requested in the config file
+    #     x_1, mask, batch_shape, n, dtype = self.extract_clean_sample(batch)
+
+    #     # Center and mask input
+    #     x_1 = self.fm._mask_and_zero_com(x_1, mask)
+
+    #     # Sample time, reference and align reference to target
+    #     t = self.sample_t(batch_shape)
+    #     x_0 = self.fm.sample_reference(
+    #         n=n, shape=batch_shape, device=self.device, dtype=dtype, mask=mask
+    #     )
+        
+    #     if self.motif_conditioning:
+    #         batch.update(self.motif_factory(batch))
+    #         x_1 = batch["x_1"] # we need this since we change x_1 based n the motif center
+    #     # Interpolation
+    #     x_t = self.fm.interpolate(x_0, x_1, t)
+    #     # Add a few things to batch, needed for nn
+    #     batch["t"] = t
+    #     batch["mask"] = mask
+    #     batch["x_t"] = x_t
+
+    #     # Fold conditional training
+    #     if self.cfg_exp.training.fold_cond:
+    #         bs = x_1.shape[0]
+    #         cath_code_list = batch.cath_code
+    #         for i in range(bs):
+    #             # Progressively mask T, A, C levels
+    #             cath_code_list[i] = mask_cath_code_by_level(
+    #                 cath_code_list[i], level="H"
+    #             )
+    #             if random.random() < self.cfg_exp.training.mask_T_prob:
+    #                 cath_code_list[i] = mask_cath_code_by_level(
+    #                     cath_code_list[i], level="T"
+    #                 )
+    #                 if random.random() < self.cfg_exp.training.mask_A_prob:
+    #                     cath_code_list[i] = mask_cath_code_by_level(
+    #                         cath_code_list[i], level="A"
+    #                     )
+    #                     if random.random() < self.cfg_exp.training.mask_C_prob:
+    #                         cath_code_list[i] = mask_cath_code_by_level(
+    #                             cath_code_list[i], level="C"
+    #                         )
+    #         batch.cath_code = cath_code_list
+    #     else:
+    #         if "cath_code" in batch:
+    #             batch.pop("cath_code")
+
+    #     # Prediction for self-conditioning
+    #     if random.random() > 0.5 and self.cfg_exp.training.self_cond:
+    #         x_pred_sc, _ = self.predict_clean(batch)
+    #         batch["x_sc"] = self.detach_gradients(x_pred_sc)
+
+    #     x_1_pred, nn_out = self.predict_clean(batch)
+
+    #     # Compute losses
+    #     fm_loss = self.compute_fm_loss(
+    #         x_1, x_1_pred, x_t, t, mask, log_prefix=log_prefix
+    #     )  # [*]
+    #     train_loss = torch.mean(fm_loss)
+        
+    #     if self.cfg_exp.loss.use_aux_loss:
+    #         auxiliary_loss = self.compute_auxiliary_loss(
+    #             x_1, x_1_pred, x_t, t, mask, nn_out=nn_out, log_prefix=log_prefix, batch=batch
+    #         )  # [*] already includes loss weights
+    #         train_loss = train_loss + torch.mean(auxiliary_loss)
+
+    #     self.log(
+    #         f"{log_prefix}/loss",
+    #         train_loss,
+    #         on_step=True,
+    #         on_epoch=True,
+    #         prog_bar=False,
+    #         logger=True,
+    #         batch_size=mask.shape[0],
+    #         sync_dist=True,
+    #         add_dataloader_idx=False,
+    #     )
+
+    #     # Don't log if validation step (indicated by batch_id)
+    #     if not val_step:
+    #         self.log(
+    #             f"train_loss",
+    #             train_loss,
+    #             on_step=True,
+    #             on_epoch=True,
+    #             prog_bar=True,
+    #             logger=True,
+    #             batch_size=mask.shape[0],
+    #             sync_dist=True,
+    #             add_dataloader_idx=False,
+    #         )
+
+    #         # For scaling laws
+    #         b, n = mask.shape
+    #         nflops_step = None
+    #         if nflops_step is not None:
+    #             self.nflops = (
+    #                 self.nflops + nflops_step * self.trainer.world_size
+    #             )  # Times number of processes so it logs sum across devices
+    #             self.log(
+    #                 "scaling/nflops",
+    #                 self.nflops * 1.0,
+    #                 on_step=True,
+    #                 on_epoch=False,
+    #                 prog_bar=False,
+    #                 logger=True,
+    #                 batch_size=1,
+    #                 sync_dist=True,
+    #             )
+
+    #         self.nsamples_processed = (
+    #             self.nsamples_processed + b * self.trainer.world_size
+    #         )
+    #         self.log(
+    #             "scaling/nsamples_processed",
+    #             self.nsamples_processed * 1.0,
+    #             on_step=True,
+    #             on_epoch=False,
+    #             prog_bar=False,
+    #             logger=True,
+    #             batch_size=1,
+    #             sync_dist=True,
+    #         )
+
+    #         self.log(
+    #             "scaling/nparams",
+    #             self.nparams * 1.0,
+    #             on_step=True,
+    #             on_epoch=False,
+    #             prog_bar=False,
+    #             logger=True,
+    #             batch_size=1,
+    #             sync_dist=True,
+    #         )
+    #         # Constant line but ok, easy to compare # params
+
+    #     return train_loss
+
     def training_step(self, batch, batch_idx):
-        """
-        Computes training loss for batch of samples.
-
-        Args:
-            batch: Data batch.
-
-        Returns:
-            Training loss averaged over batches.
-        """
-        val_step = batch_idx == -1  # validation step is indicated with batch_idx -1
-        log_prefix = "validation_loss" if val_step else "train"
-        
-        # Extract inputs from batch (our dataloader)
-        # This may apply augmentations, if requested in the config file
-        x_1, mask, batch_shape, n, dtype = self.extract_clean_sample(batch)
-
-        # Center and mask input
-        x_1 = self.fm._mask_and_zero_com(x_1, mask)
-
-        # Sample time, reference and align reference to target
-        t = self.sample_t(batch_shape)
-        x_0 = self.fm.sample_reference(
-            n=n, shape=batch_shape, device=self.device, dtype=dtype, mask=mask
-        )
-        
-        if self.motif_conditioning:
-            batch.update(self.motif_factory(batch))
-            x_1 = batch["x_1"] # we need this since we change x_1 based n the motif center
-        # Interpolation
-        x_t = self.fm.interpolate(x_0, x_1, t)
-        # Add a few things to batch, needed for nn
-        batch["t"] = t
-        batch["mask"] = mask
-        batch["x_t"] = x_t
-
-        # Fold conditional training
-        if self.cfg_exp.training.fold_cond:
-            bs = x_1.shape[0]
-            cath_code_list = batch.cath_code
-            for i in range(bs):
-                # Progressively mask T, A, C levels
-                cath_code_list[i] = mask_cath_code_by_level(
-                    cath_code_list[i], level="H"
-                )
-                if random.random() < self.cfg_exp.training.mask_T_prob:
-                    cath_code_list[i] = mask_cath_code_by_level(
-                        cath_code_list[i], level="T"
-                    )
-                    if random.random() < self.cfg_exp.training.mask_A_prob:
-                        cath_code_list[i] = mask_cath_code_by_level(
-                            cath_code_list[i], level="A"
-                        )
-                        if random.random() < self.cfg_exp.training.mask_C_prob:
-                            cath_code_list[i] = mask_cath_code_by_level(
-                                cath_code_list[i], level="C"
-                            )
-            batch.cath_code = cath_code_list
-        else:
-            if "cath_code" in batch:
-                batch.pop("cath_code")
-
-        # Prediction for self-conditioning
-        if random.random() > 0.5 and self.cfg_exp.training.self_cond:
-            x_pred_sc, _ = self.predict_clean(batch)
-            batch["x_sc"] = self.detach_gradients(x_pred_sc)
-
-        x_1_pred, nn_out = self.predict_clean(batch)
-
-        # Compute losses
-        fm_loss = self.compute_fm_loss(
-            x_1, x_1_pred, x_t, t, mask, log_prefix=log_prefix
-        )  # [*]
-        train_loss = torch.mean(fm_loss)
-        
-        if self.cfg_exp.loss.use_aux_loss:
-            auxiliary_loss = self.compute_auxiliary_loss(
-                x_1, x_1_pred, x_t, t, mask, nn_out=nn_out, log_prefix=log_prefix, batch=batch
-            )  # [*] already includes loss weights
-            train_loss = train_loss + torch.mean(auxiliary_loss)
-
-        self.log(
-            f"{log_prefix}/loss",
-            train_loss,
-            on_step=True,
-            on_epoch=True,
-            prog_bar=False,
-            logger=True,
-            batch_size=mask.shape[0],
-            sync_dist=True,
-            add_dataloader_idx=False,
-        )
-
-        # Don't log if validation step (indicated by batch_id)
-        if not val_step:
-            self.log(
-                f"train_loss",
-                train_loss,
-                on_step=True,
-                on_epoch=True,
-                prog_bar=True,
-                logger=True,
-                batch_size=mask.shape[0],
-                sync_dist=True,
-                add_dataloader_idx=False,
-            )
-
-            # For scaling laws
-            b, n = mask.shape
-            nflops_step = None
-            if nflops_step is not None:
-                self.nflops = (
-                    self.nflops + nflops_step * self.trainer.world_size
-                )  # Times number of processes so it logs sum across devices
-                self.log(
-                    "scaling/nflops",
-                    self.nflops * 1.0,
-                    on_step=True,
-                    on_epoch=False,
-                    prog_bar=False,
-                    logger=True,
-                    batch_size=1,
-                    sync_dist=True,
-                )
-
-            self.nsamples_processed = (
-                self.nsamples_processed + b * self.trainer.world_size
-            )
-            self.log(
-                "scaling/nsamples_processed",
-                self.nsamples_processed * 1.0,
-                on_step=True,
-                on_epoch=False,
-                prog_bar=False,
-                logger=True,
-                batch_size=1,
-                sync_dist=True,
-            )
-
-            self.log(
-                "scaling/nparams",
-                self.nparams * 1.0,
-                on_step=True,
-                on_epoch=False,
-                prog_bar=False,
-                logger=True,
-                batch_size=1,
-                sync_dist=True,
-            )
-            # Constant line but ok, easy to compare # params
-
-        return train_loss
+        self.get_log_likelihood(batch, update_grad=True)
 
     @abstractmethod
     def compute_fm_loss(
@@ -490,7 +495,7 @@ class ModelTrainerBase(L.LightningModule):
             fixed_sequence_mask = None
 
 
-        return self.generate(
+        x = self.generate(
             nsamples=batch["nsamples"],
             n=batch["nres"],
             dt=batch["dt"].to(dtype=torch.float32),
@@ -512,6 +517,7 @@ class ModelTrainerBase(L.LightningModule):
             fixed_sequence_mask = fixed_sequence_mask,
             fixed_structure_mask = fixed_structure_mask,
         )
+        return x
 
     def generate(
         self,
@@ -569,10 +575,12 @@ class ModelTrainerBase(L.LightningModule):
             fixed_structure_mask = fixed_structure_mask,
         )
 
-    def get_log_likelihood(self, traj, return_grad = False):
+    def get_log_likelihood(self, traj, update_grad = False):
         """
         Computes the log likelihood of a trajectory.
         """
+        if update_grad:
+            traj, grad_weight = traj
         sampling_args = self.inf_cfg.sampling_caflow
         ts = self.fm.get_schedule(
             mode=self.inf_cfg.schedule.schedule_mode,
@@ -588,21 +596,24 @@ class ModelTrainerBase(L.LightningModule):
         )
         nsamples = traj[0].shape[0]
         n = traj[0].shape[1]
-        device = traj[0].device
+        device = self.device
         logprop = torch.zeros(nsamples, device=device)
-        with torch.set_grad_enabled(return_grad):
+        traj[0] = traj[0].to(device)
+        with torch.set_grad_enabled(update_grad):
             
             for step in tqdm(range(len(t_eval))):
+
+                traj[step+1] = traj[step+1].to(device)
 
                 t = ts[step] * torch.ones(nsamples, device=device)  # [nsamples]
                 dt = ts[step + 1] - ts[step]  # float
                 gt_step = gt[step]  # float
 
-                traj[step].requires_grad_(return_grad)
+                traj[step].requires_grad_(update_grad)
                 nn_in = {
-                    "x_t": traj[step],
+                    "x_t": traj[step].to(device),
                     "t": t,
-                    "mask": torch.ones(nsamples, n).bool().to(device),
+                    "mask": torch.ones(nsamples, n, device=device).bool(),
                 }
 
                 x_1_pred, v = self.predict_clean_n_v_w_guidance(nn_in)
@@ -610,7 +621,15 @@ class ModelTrainerBase(L.LightningModule):
                 score = self.fm.vf_to_score(traj[step], v, t_ext)  # get score from v, [*, dim]
                 std_eps = torch.sqrt(2 * gt_step * sampling_args["sc_scale_noise"] * dt)
                 diff = (traj[step+1] - (v + gt_step * score) * dt)
-                logprop -= (diff ** 2).mean(dim = (1,2)) / (2 * std_eps) - n * 3 * (math.log(std_eps) + 0.5 * math.log(2 * math.pi))
+                logprop_t = (diff ** 2).mean(dim = (1,2)) / (2 * std_eps) - n * 3 * (math.log(std_eps) + 0.5 * math.log(2 * math.pi))
+                detached_logprop_t = logprop_t.detach()
+                logprop -= detached_logprop_t
+                ts_limit = 0.99
+                if self.inf_cfg.schedule.schedule_mode in ["cos_sch_v_snr", "edm"]:
+                    ts_limit = 0.985
+                if update_grad and ts[step] <= ts_limit:
+                    loss_t = - (logprop_t * (grad_weight - detached_logprop_t)).mean()
+                    loss_t.manual_backward()
 
         return logprop
 

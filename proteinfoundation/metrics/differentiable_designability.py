@@ -22,6 +22,8 @@ from transformers import AutoTokenizer, EsmForProteinFolding
 
 from transformers.models.esm.openfold_utils.feats import atom14_to_atom37
 
+from tqdm import tqdm
+
 def get_args():
     
     argparser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -50,7 +52,7 @@ def get_args():
  
     argparser.add_argument("--backbone_noise", type=float, default=0.00, help="Standard deviation of Gaussian noise to add to backbone atoms")
     argparser.add_argument("--num_seq_per_target", type=int, default=8, help="Number of sequences to generate per target")
-    argparser.add_argument("--batch_size", type=int, default=8, help="Batch size; can set higher for titan, quadro GPUs, reduce this if running out of GPU memory")
+    argparser.add_argument("--batch_size", type=int, default=128, help="Batch size; can set higher for titan, quadro GPUs, reduce this if running out of GPU memory")
     argparser.add_argument("--max_length", type=int, default=200000, help="Max sequence length")
     argparser.add_argument("--sampling_temp", type=str, default="0.1", help="A string of temperatures, 0.2 0.25 0.5. Sampling temperature for amino acids. Suggested values 0.1, 0.15, 0.2, 0.25, 0.3. Higher values will lead to more diversity.")
     
@@ -151,6 +153,8 @@ class Designability:
         torch.manual_seed(seed)
         random.seed(seed)
         np.random.seed(seed)
+
+        args.batch_size = min(args.batch_size, proteins.shape[0])
         
         NUM_BATCHES = proteins.shape[0]//args.batch_size
         temperatures = [float(item) for item in args.sampling_temp.split()]
@@ -173,7 +177,7 @@ class Designability:
         all_seqs = []
         grads = []
         
-        for ix in range(NUM_BATCHES):
+        for ix in tqdm(range(NUM_BATCHES)):
 
             start = ix*args.batch_size
             end = start + args.batch_size
@@ -194,8 +198,7 @@ class Designability:
 
             for temp in temperatures:
                 randn_2 = torch.randn(chain_M.shape, device=X.device)
-                with torch.autograd.detect_anomaly():
-                    sample_dict = self.model.sample(X, randn_2, S, chain_M, chain_encoding_all, residue_idx, mask=mask, temperature=temp, omit_AAs_np=omit_AAs_np, bias_AAs_np=bias_AAs_np, chain_M_pos=chain_M_pos, omit_AA_mask=omit_AA_mask, pssm_coef=pssm_coef, pssm_bias=pssm_bias, pssm_multi=args.pssm_multi, pssm_log_odds_flag=bool(args.pssm_log_odds_flag), pssm_log_odds_mask=pssm_log_odds_mask, pssm_bias_flag=bool(args.pssm_bias_flag), bias_by_res=bias_by_res_all)
+                sample_dict = self.model.sample(X, randn_2, S, chain_M, chain_encoding_all, residue_idx, mask=mask, temperature=temp, omit_AAs_np=omit_AAs_np, bias_AAs_np=bias_AAs_np, chain_M_pos=chain_M_pos, omit_AA_mask=omit_AA_mask, pssm_coef=pssm_coef, pssm_bias=pssm_bias, pssm_multi=args.pssm_multi, pssm_log_odds_flag=bool(args.pssm_log_odds_flag), pssm_log_odds_mask=pssm_log_odds_mask, pssm_bias_flag=bool(args.pssm_bias_flag), bias_by_res=bias_by_res_all)
                 for i in range(B):
                     all_seqs.append(_S_to_seq(sample_dict['S'][i], chain_M[i]))
                 
@@ -204,6 +207,9 @@ class Designability:
                     # grad = torch.autograd.grad(log_probs, X, grad_outputs=torch.ones_like(log_probs, device='cuda'))[0]
                     # print(torch.autograd.grad(log_probs, X, grad_outputs=torch.ones_like(log_probs, device='cuda'))[0][0])
                     # grads.append(grad)
+
+        print("Inside proteinMPNN")
+        print(torch.cuda.memory_summary(device='cuda', abbreviated=False))
 
         return all_seqs, grads
 
@@ -215,9 +221,9 @@ class Designability:
         proteins_copied = proteins.repeat_interleave(ns, dim=0)
         with torch.set_grad_enabled(return_grad):
             seqs, log_prob_grads = self.proteinMPNN(proteins_copied, return_grad)
-        batch_size = 8
+        batch_size = min(128, len(seqs))
         rmsd_list = []
-        for i in range(0, len(seqs), batch_size):
+        for i in tqdm(range(0, len(seqs), batch_size)):
             batch_seqs = seqs[i:i+batch_size]
             with torch.no_grad():
                 inputs = self.tokenizer(

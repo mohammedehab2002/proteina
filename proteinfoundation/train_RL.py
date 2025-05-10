@@ -42,6 +42,10 @@ from proteinfoundation.utils.ff_utils.pdb_utils import mask_cath_code_by_level, 
 
 from proteinfoundation.metrics.differentiable_designability import Designability
 
+from lightning.pytorch.callbacks import Callback
+
+import torch.distributed as dist
+
 # Length dataloader for validation and inference
 class GenDataset(Dataset):
     """
@@ -190,6 +194,50 @@ def parse_len_cath_code(cfg):
         len_cath_codes = None
     return len_cath_codes
 
+class TrajsDataset(Dataset):
+    def __init__(self, trajs):
+        self.trajs = trajs
+
+    def __len__(self):
+        return len(self.trajs)
+
+    def __getitem__(self, idx):
+        return self.trajs[idx]
+    
+class RewardsDataset(Dataset):
+    def __init__(self, trajs, rewards):
+        self.trajs = trajs
+        self.rewards = rewards
+
+    def __len__(self):
+        return len(self.trajs)
+
+    def __getitem__(self, idx):
+        return self.trajs[idx], self.rewards[idx]
+    
+class PredictionCollector(Callback):
+    def __init__(self):
+        super().__init__()
+        self.all_preds = []
+
+    def on_predict_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
+        """
+        outputs: your predict_step return, here a List[Tensor] of length L.
+        """
+        # 1) gather the Python object `outputs` across all ranks
+        gathered: list = [None] * trainer.world_size
+        dist.all_gather_object(gathered, outputs)
+
+        # 2) only rank 0 needs to accumulate them
+        if trainer.global_rank == 0:
+            for rank_outputs in gathered:
+                # rank_outputs is that rank's List[Tensor] for this batch
+                self.all_preds.append(rank_outputs)
+
+    # def on_predict_epoch_end(self, trainer, pl_module):
+    #     if trainer.global_rank == 0:
+    #         print(f"Collected {len(self.all_preds)} lists of Tensors in rank 0")
+    #         print(self.all_preds)
 
 if __name__ == "__main__":
     load_dotenv()
@@ -295,6 +343,9 @@ if __name__ == "__main__":
         nn_ag = model_ag.nn
 
     model.configure_inference(cfg, nn_ag=nn_ag)
+    base_model.configure_inference(cfg, nn_ag=nn_ag)
+    base_model.predict_step = lambda batch, batch_idx: base_model.get_log_likelihood(batch)
+    base_model.eval()
 
     # Create length dataset
     nlens_dict = parse_nlens_cfg(cfg)
@@ -325,12 +376,54 @@ if __name__ == "__main__":
 
     model.base_model = base_model
 
-    # Sample the model
-    trainer = L.Trainer(accelerator="gpu", devices=1)
-    predictions = trainer.predict(model, dataloader)
+    designability = Designability()
 
-    model.configure_optimizers()
+    optim = model.configure_optimizers()
 
-    for pred in predictions:
-        print(len(pred), pred[0].shape)
-        print(model.get_log_likelihood(pred))
+    for epoch in range(50000):
+
+        # Sample the model
+        # predictions = []
+        # for batch_idx,batch in enumerate(dataloader):
+        #     predictions.append(model.module.predict_step(batch, batch_idx))
+        prediction_collector = PredictionCollector()
+        trainer = L.Trainer(accelerator="gpu", devices=2, strategy="ddp", callbacks = [prediction_collector])
+        trainer.predict(model, dataloader)
+        predictions = prediction_collector.all_preds
+
+        
+
+        print(len(predictions), len(predictions[0]), predictions[0][0].shape)
+
+        trajs_dataset = TrajsDataset(predictions)
+        print("here")
+        trajs_dataloader = DataLoader(trajs_dataset, batch_size=1)
+        trainer = L.Trainer(accelerator="gpu", devices=2, strategy="ddp")
+        log_likelihood_base = trainer.predict(base_model, trajs_dataloader)
+
+        optim.zero_grad()
+
+        total_designable = 0
+
+        grad_weights = []
+
+        for i,pred in enumerate(predictions):
+            rewards = designability.scRMSD(pred[-1].cuda())
+            total_designable += (rewards < 2).sum().item()
+            print(rewards)
+            rewards = torch.log(torch.sigmoid(8 - 4 * rewards))
+            grad_weights.append(rewards + log_likelihood_base[i] - 1)
+
+        optim.zero_grad()
+        trainer = L.Trainer(accelerator="gpu", devices=2, strategy="ddp")
+        rewards_dataset = RewardsDataset(predictions, grad_weights)
+        rewards_dataloader = DataLoader(rewards_dataset, batch_size=1)
+        trainer.fit(model, rewards_dataloader)
+        optim.step()
+
+        print(f"{total_designable}/{len(predictions) * predictions[0][0].shape[0]} designable")
+
+        if epoch % 10 == 0:
+            torch.save(model.state_dict(), ckpt_path + f"RL/epoch_{epoch}.pt")
+        
+        optim.step()

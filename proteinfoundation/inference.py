@@ -326,7 +326,8 @@ if __name__ == "__main__":
     trainer = L.Trainer(accelerator="gpu", devices=1)
     predictions = trainer.predict(model, dataloader)
 
-    print(Designability().scRMSD(predictions[0][:, :, 1, :].to('cuda')))
+    print(Designability().scRMSD(predictions[0][-1].to('cuda')))
+    print(Designability().scRMSD(predictions[1][-1].to('cuda')))
 
     # Code for designability and
     # Store samples generated as pdbs and also scRMSD
