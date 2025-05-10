@@ -1126,7 +1126,7 @@ class ProteinMPNN(nn.Module):
         mask_fw = mask_1D * (1. - mask_attend)
 
         N_batch, N_nodes = X.size(0), X.size(1)
-        log_probs = torch.zeros((N_batch,), device=device, dtype=torch.float32)
+        log_probs = torch.zeros((N_batch, N_nodes, 21), device=device)
         all_probs = torch.zeros((N_batch, N_nodes, 21), device=device, dtype=torch.float32)
         h_S = torch.zeros_like(h_V, device=device)
         S = torch.zeros((N_batch, N_nodes), dtype=torch.int64, device=device)
@@ -1159,7 +1159,7 @@ class ProteinMPNN(nn.Module):
                     h_ESV_decoder_t = cat_neighbors_nodes(h_V_stack[l], h_ES_t, E_idx_t)
                     h_V_t = torch.gather(h_V_stack[l], 1, t[:,None,None].repeat(1,1,h_V_stack[l].shape[-1]))
                     h_ESV_t = torch.gather(mask_bw, 1, t[:,None,None,None].repeat(1,1,mask_bw.shape[-2], mask_bw.shape[-1])) * h_ESV_decoder_t + h_EXV_encoder_t
-                    h_V_stack[l+1] = h_V_stack[l+1].scatter(1, t[:,None,None].repeat(1,1,h_V.shape[-1]), layer(h_V_t, h_ESV_t, mask_V=mask_t))
+                    h_V_stack[l+1].scatter_(1, t[:,None,None].repeat(1,1,h_V.shape[-1]), layer(h_V_t, h_ESV_t, mask_V=mask_t))
                 # Sampling step
                 h_V_t = torch.gather(h_V_stack[-1], 1, t[:,None,None].repeat(1,1,h_V_stack[-1].shape[-1]))[:,0]
                 logits = self.W_out(h_V_t) / temperature
@@ -1178,14 +1178,13 @@ class ProteinMPNN(nn.Module):
                     probs_masked = probs*(1.0-omit_AA_mask_gathered)
                     probs = probs_masked/torch.sum(probs_masked, dim=-1, keepdim=True) #[B, 21]
                 S_t = torch.multinomial(probs, 1)
-                all_probs = all_probs.scatter(1, t[:,None,None].repeat(1,1,21), (chain_mask_gathered[:,:,None,]*probs[:,None,:]).float())
+                all_probs.scatter_(1, t[:,None,None].repeat(1,1,21), (chain_mask_gathered[:,:,None,]*probs[:,None,:]).float())
             S_true_gathered = torch.gather(S_true, 1, t[:,None])
             S_t = (S_t*chain_mask_gathered+S_true_gathered*(1.0-chain_mask_gathered)).long()
             temp1 = self.W_s(S_t)
-            h_S = h_S.scatter(1, t[:,None,None].repeat(1,1,temp1.shape[-1]), temp1)
-            S = S.scatter(1, t[:,None], S_t)
-            log_probs = log_probs + torch.gather(probs, 1, S_t).squeeze(-1).log()
-        output_dict = {"S": S, "log_probs": log_probs, "decoding_order": decoding_order}
+            h_S.scatter_(1, t[:,None,None].repeat(1,1,temp1.shape[-1]), temp1)
+            S.scatter_(1, t[:,None], S_t)
+        output_dict = {"S": S, "probs": all_probs, "decoding_order": decoding_order}
         return output_dict
 
 
@@ -1381,4 +1380,3 @@ class ProteinMPNN(nn.Module):
         logits = self.W_out(h_V)
         log_probs = F.log_softmax(logits, dim=-1)
         return log_probs
-

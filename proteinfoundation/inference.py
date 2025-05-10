@@ -33,7 +33,6 @@ from proteinfoundation.utils.lora_utils import replace_lora_layers
 
 
 from proteinfoundation.metrics.designability import scRMSD
-from proteinfoundation.metrics.differentiable_designability import Designability
 from proteinfoundation.metrics.metric_factory import (
     GenerationMetricFactory,
     generation_metric_from_list,
@@ -41,6 +40,7 @@ from proteinfoundation.metrics.metric_factory import (
 from proteinfoundation.proteinflow.proteina import Proteina
 from proteinfoundation.utils.ff_utils.pdb_utils import mask_cath_code_by_level, write_prot_to_pdb
 
+from proteinfoundation.metrics.differentiable_designability import Designability
 
 # Length dataloader for validation and inference
 class GenDataset(Dataset):
@@ -323,14 +323,10 @@ if __name__ == "__main__":
     columns = list(flat_dict.keys())
 
     # Sample the model
-    trainer = L.Trainer(accelerator="gpu", devices=1, inference_mode=False)
-    with torch.set_grad_enabled(cfg.sampling_caflow.sampling_mode == 'vfl'):
-        predictions = trainer.predict(model, dataloader)
+    trainer = L.Trainer(accelerator="gpu", devices=1)
+    predictions = trainer.predict(model, dataloader)
 
-    # predictions = [(torch.randn((1, 50, 37, 3)), torch.randn((8,)))]
-
-    proteins = predictions[0][0][:,:,1,:].to("cuda")
-    print(Designability().scRMSD(proteins))
+    print(Designability().scRMSD(predictions[0][:, :, 1, :].to('cuda')))
 
     # Code for designability and
     # Store samples generated as pdbs and also scRMSD
@@ -341,13 +337,10 @@ if __name__ == "__main__":
         if cfg.compute_designability:
             columns += ["_res_scRMSD", "_res_scRMSD_all"]
 
-        columns += ["log_likelihood"]
-
         results = []
         samples_per_length = {}
         for pred in predictions:
-            coors_atom37 = pred[0]  # [b, n, 37, 3], prediction_step returns atom37
-            log_likelihood = pred[1]
+            coors_atom37 = pred  # [b, n, 37, 3], prediction_step returns atom37
             n = coors_atom37.shape[-3]
             if n not in samples_per_length:
                 samples_per_length[n] = 0
@@ -360,7 +353,7 @@ if __name__ == "__main__":
                 sample_root_path = os.path.join(
                     root_path, dir_name
                 )  # ./inference/conf_{}/n_{}_id_{}
-                os.makedirs(sample_root_path, exist_ok=True)
+                os.makedirs(sample_root_path, exist_ok=False)
 
                 # Save generated structure as pdb
                 fname = dir_name + ".pdb"
@@ -382,8 +375,6 @@ if __name__ == "__main__":
                     res_row += [min(res_designability), res_designability]
                     print(min(res_designability))
 
-                res_row += [log_likelihood[i].item()]
-
                 results.append(res_row)
 
         # Create the dataframe with results
@@ -398,7 +389,7 @@ if __name__ == "__main__":
         # Store samples
         list_of_pdbs = []
         for pred in predictions:
-            coors_atom37 = pred[0]  # [b, n, 37, 3], prediction_step returns atom37
+            coors_atom37 = pred  # [b, n, 37, 3], prediction_step returns atom37
             for i in range(coors_atom37.shape[0]):
                 pdb_path = os.path.join(samples_dir_fid, f"{len(list_of_pdbs)}_fid.pdb")
                 write_prot_to_pdb(

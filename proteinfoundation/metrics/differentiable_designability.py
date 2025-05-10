@@ -49,8 +49,8 @@ def get_args():
     argparser.add_argument("--unconditional_probs_only", type=int, default=0, help="0 for False, 1 for True; output unconditional probabilities p(s_i given backbone) in one forward pass")   
  
     argparser.add_argument("--backbone_noise", type=float, default=0.00, help="Standard deviation of Gaussian noise to add to backbone atoms")
-    argparser.add_argument("--num_seq_per_target", type=int, default=1, help="Number of sequences to generate per target")
-    argparser.add_argument("--batch_size", type=int, default=1, help="Batch size; can set higher for titan, quadro GPUs, reduce this if running out of GPU memory")
+    argparser.add_argument("--num_seq_per_target", type=int, default=8, help="Number of sequences to generate per target")
+    argparser.add_argument("--batch_size", type=int, default=8, help="Batch size; can set higher for titan, quadro GPUs, reduce this if running out of GPU memory")
     argparser.add_argument("--max_length", type=int, default=200000, help="Max sequence length")
     argparser.add_argument("--sampling_temp", type=str, default="0.1", help="A string of temperatures, 0.2 0.25 0.5. Sampling temperature for amino acids. Suggested values 0.1, 0.15, 0.2, 0.25, 0.3. Higher values will lead to more diversity.")
     

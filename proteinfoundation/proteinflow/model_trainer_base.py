@@ -51,9 +51,12 @@ class ModelTrainerBase(L.LightningModule):
         self.nn_ag = None
         self.motif_conditioning = cfg_exp.training.get("motif_conditioning", False)
 
+        self.base_model = None
+
     def configure_optimizers(self):
+        self.params = [p for p in self.parameters() if p.requires_grad]
         optimizer = torch.optim.Adam(
-            [p for p in self.parameters() if p.requires_grad], lr=self.cfg_exp.opt.lr
+            self.params, lr=self.cfg_exp.opt.lr
         )
         return optimizer
 
@@ -485,7 +488,7 @@ class ModelTrainerBase(L.LightningModule):
             fixed_sequence_mask = None
 
 
-        x, log_likelihood = self.generate(
+        return self.generate(
             nsamples=batch["nsamples"],
             n=batch["nres"],
             dt=batch["dt"].to(dtype=torch.float32),
@@ -506,8 +509,8 @@ class ModelTrainerBase(L.LightningModule):
             x_motif = x_motif,
             fixed_sequence_mask = fixed_sequence_mask,
             fixed_structure_mask = fixed_structure_mask,
+            base_model = self.base_model,
         )
-        return self.samples_to_atom37(x), log_likelihood  # [b, n, 37, 3], [b]
 
     def generate(
         self,
@@ -531,6 +534,7 @@ class ModelTrainerBase(L.LightningModule):
         x_motif = None,
         fixed_sequence_mask = None,
         fixed_structure_mask = None,
+        base_model = None,
     ) -> Dict[str, Tensor]:
         """
         Generates samples by integrating ODE with learned vector field.
@@ -563,6 +567,8 @@ class ModelTrainerBase(L.LightningModule):
             x_motif = x_motif,
             fixed_sequence_mask = fixed_sequence_mask,
             fixed_structure_mask = fixed_structure_mask,
+            model = self,
+            base_model = base_model,
         )
 
 

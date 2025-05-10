@@ -9,8 +9,8 @@ ckpt_name: proteina_v1.1_DFS_200M_tri.ckpt
 self_cond: False
 
 sampling_caflow:
-  sampling_mode: vf  # "vf" for ODE sampling, "sc" for SDE sampling
-  sc_scale_noise: 0.0  # noise scale, used if sampling_mode == "sc"
+  sampling_mode: sc_training  # "vf" for ODE sampling, "sc" for SDE sampling
+  sc_scale_noise: 1.0  # noise scale, used if sampling_mode == "sc"
 
 nres_lens: [50]
-max_nsamples: 25
+max_nsamples: 1
