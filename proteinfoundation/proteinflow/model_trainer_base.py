@@ -25,6 +25,8 @@ from loguru import logger
 from torch import Dict, Tensor
 
 from proteinfoundation.utils.ff_utils.pdb_utils import mask_cath_code_by_level
+from tqdm import tqdm
+import math
 
 
 class ModelTrainerBase(L.LightningModule):
@@ -509,7 +511,6 @@ class ModelTrainerBase(L.LightningModule):
             x_motif = x_motif,
             fixed_sequence_mask = fixed_sequence_mask,
             fixed_structure_mask = fixed_structure_mask,
-            base_model = self.base_model,
         )
 
     def generate(
@@ -534,7 +535,6 @@ class ModelTrainerBase(L.LightningModule):
         x_motif = None,
         fixed_sequence_mask = None,
         fixed_structure_mask = None,
-        base_model = None,
     ) -> Dict[str, Tensor]:
         """
         Generates samples by integrating ODE with learned vector field.
@@ -567,9 +567,52 @@ class ModelTrainerBase(L.LightningModule):
             x_motif = x_motif,
             fixed_sequence_mask = fixed_sequence_mask,
             fixed_structure_mask = fixed_structure_mask,
-            model = self,
-            base_model = base_model,
         )
+
+    def get_log_likelihood(self, traj, return_grad = False):
+        """
+        Computes the log likelihood of a trajectory.
+        """
+        sampling_args = self.inf_cfg.sampling_caflow
+        ts = self.fm.get_schedule(
+            mode=self.inf_cfg.schedule.schedule_mode,
+            nsteps=len(traj)-1,
+            p1=self.inf_cfg.schedule.schedule_p,
+        )
+        t_eval = ts[:-1]  # [nsteps], last one is 1 not used to eval but to define dt
+        gt = self.fm.get_gt(
+            t=t_eval,
+            mode=sampling_args["gt_mode"],
+            param=sampling_args["gt_p"],
+            clamp_val=sampling_args["gt_clamp_val"],
+        )
+        nsamples = traj[0].shape[0]
+        n = traj[0].shape[1]
+        device = traj[0].device
+        logprop = torch.zeros(nsamples, device=device)
+        with torch.set_grad_enabled(return_grad):
+            
+            for step in tqdm(range(len(t_eval))):
+
+                t = ts[step] * torch.ones(nsamples, device=device)  # [nsamples]
+                dt = ts[step + 1] - ts[step]  # float
+                gt_step = gt[step]  # float
+
+                traj[step].requires_grad_(return_grad)
+                nn_in = {
+                    "x_t": traj[step],
+                    "t": t,
+                    "mask": torch.ones(nsamples, n).bool().to(device),
+                }
+
+                x_1_pred, v = self.predict_clean_n_v_w_guidance(nn_in)
+                t_ext = self.fm._extend_t(n, t)
+                score = self.fm.vf_to_score(traj[step], v, t_ext)  # get score from v, [*, dim]
+                std_eps = torch.sqrt(2 * gt_step * sampling_args["sc_scale_noise"] * dt)
+                diff = (traj[step+1] - (v + gt_step * score) * dt)
+                logprop -= (diff ** 2).mean(dim = (1,2)) / (2 * std_eps) - n * 3 * (math.log(std_eps) + 0.5 * math.log(2 * math.pi))
+
+        return logprop
 
 
 def _extract_cath_code(batch):

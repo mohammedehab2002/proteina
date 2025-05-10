@@ -326,15 +326,11 @@ if __name__ == "__main__":
     model.base_model = base_model
 
     # Sample the model
-    trainer = L.Trainer(accelerator="gpu", devices=1, inference_mode=False)
+    trainer = L.Trainer(accelerator="gpu", devices=1)
     predictions = trainer.predict(model, dataloader)
 
-    model.configue_optimizers()
+    model.configure_optimizers()
 
     for pred in predictions:
-        x = pred[0]
-        loss = pred[1]
-        logb_base = pred[2]
-
-        print(x, loss, logb_base)
-        print(x.shape, loss.shape, logb_base.shape)
+        print(len(pred), pred[0].shape)
+        print(model.get_log_likelihood(pred))

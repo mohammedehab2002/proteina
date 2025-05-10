@@ -205,7 +205,6 @@ class R3NFlowMatcher:
         sc_scale_noise: float,
         sc_scale_score: float,
         mask: Optional[Bool[Tensor, "* n"]] = None,
-        loss = None,
     ) -> Tuple[Float[Tensor, "* n 3"], Float[Tensor, "*"]]:
         """
         Single integration step of ODE \dot{x_t} = v(x_t, t) using Euler integration scheme.
@@ -232,7 +231,7 @@ class R3NFlowMatcher:
         # Euler step
         t_ext = self._extend_t(n, t)  # [*, n]
 
-        x_t_updated, _, loss_updated = self.step_euler(
+        x_t_updated, _ = self.step_euler(
             x_t=x_t,
             v=v,
             t=t_ext,
@@ -241,7 +240,6 @@ class R3NFlowMatcher:
             sampling_mode=sampling_mode,
             sc_scale_noise=sc_scale_noise,
             sc_scale_score=sc_scale_score,
-            loss=loss,
         )
 
         return (
@@ -249,7 +247,6 @@ class R3NFlowMatcher:
                 x_t_updated, mask
             ),  # Equivalent to centering the update vector since x_t is centered
             t + dt,
-            loss_updated,
         )
 
     def step_euler(
@@ -262,7 +259,6 @@ class R3NFlowMatcher:
         sampling_mode: Literal["vf", "sc"],
         sc_scale_noise: float,
         sc_scale_score: float,
-        loss = None,
     ) -> tuple[Float[Tensor, "* n 3"], Float[Tensor, "* n"]]:
         """
         Single integration step of ODE
@@ -308,6 +304,10 @@ class R3NFlowMatcher:
             Updated values for x_t after an Euler integration step, shape [*, n, 3].
             Updated time [*, n]
         """
+        assert sampling_mode in [
+            "vf",
+            "sc",
+        ], f"Invalid sampling mode {sampling_mode}, should be `vf` or `sc`"
         assert (
             sc_scale_noise >= 0
         ), f"Scale noise for sampling should be >= 0, got {sc_scale_noise}"
@@ -324,21 +324,14 @@ class R3NFlowMatcher:
         if (
             sampling_mode == "vf" or t_element > 1.0
         ):
-            return x_t + v * dt, t + dt, loss
+            return x_t + v * dt, t + dt
 
         if sampling_mode == "sc":
             score = self.vf_to_score(x_t, v, t)  # get score from v, [*, dim]
             eps = torch.randn(x_t.shape, dtype=x_t.dtype, device=x_t.device)  # [*, dim]
             std_eps = torch.sqrt(2 * gt * sc_scale_noise * dt)
             delta_x = (v + gt * score) * dt + std_eps * eps
-            return x_t + delta_x, t + dt, loss
-        
-        if sampling_mode == "sc_training":
-            score = self.vf_to_score(x_t, v, t)  # get score from v, [*, dim]
-            eps = torch.randn(x_t.shape, dtype=x_t.dtype, device=x_t.device)  # [*, dim]
-            std_eps = torch.sqrt(2 * gt * sc_scale_noise * dt)
-            delta_x = (v + gt * score) * dt + std_eps * eps
-            return x_t + delta_x, t + dt, loss - (eps ** 2).mean(dim = (1,2)) / 2
+            return x_t + delta_x, t + dt
 
     def vf_to_score(
         self,
@@ -428,8 +421,6 @@ class R3NFlowMatcher:
         x_motif = None,
         fixed_sequence_mask = None,
         fixed_structure_mask = None,
-        model = None,
-        base_model = None,
         dtype: Optional[torch.dtype] = None,
     ) -> Dict[str, Tensor]:
         """
@@ -491,13 +482,12 @@ class R3NFlowMatcher:
             clamp_val=gt_clamp_val,
         )
 
-        with torch.set_grad_enabled(sampling_mode == "sc_training"):
+        with torch.no_grad():
             x = self.sample_reference(
                 n, shape=(nsamples,), device=device, mask=mask, dtype=dtype
             )  # [nsamples, n, 3]
 
-            grad = (None if sampling_mode != "sc_training" else torch.zeros((nsamples, len(model.params)), device=device))
-            base_logprop = (None if sampling_mode != "sc_training" else torch.zeros(nsamples, device=device))
+            traj = [x]
             
             if fixed_sequence_mask is not None:
                 x_motif = (x_motif - mean_w_mask(x_motif, fixed_sequence_mask, keepdim=True)) * fixed_sequence_mask[..., None]
@@ -506,8 +496,6 @@ class R3NFlowMatcher:
                 t = ts[step] * torch.ones(nsamples, device=device)  # [nsamples]
                 dt = ts[step + 1] - ts[step]  # float
                 gt_step = gt[step]  # float
-
-                x.requires_grad_(sampling_mode == "sc_training")
 
                 if fixed_structure_mask is None:
                     nn_in = {
@@ -533,19 +521,13 @@ class R3NFlowMatcher:
                 x_1_pred, v = predict_clean_n_v(nn_in)
 
                 # Accomodate last few steps
-                if ts[step] > 0.99 and sampling_mode == "sc":
+                if ts[step] > 0.99:
                     sampling_mode = "vf"
                 if schedule_mode in ["cos_sch_v_snr", "edm"]:
-                    if ts[step] > 0.985 and sampling_mode == "sc":
+                    if ts[step] > 0.985:
                         sampling_mode = "vf"
 
-                v_base = None
-                
-                if sampling_mode == "sc_training":
-                    with torch.no_grad():
-                        x_1_pred_base, v_base = base_model.predict_clean_n_v_w_guidance(nn_in)
-
-                tmp = self.simulation_step(
+                x, _ = self.simulation_step(
                     x_t=x,
                     v=v,
                     t=t,
@@ -555,24 +537,11 @@ class R3NFlowMatcher:
                     sc_scale_noise=sc_scale_noise,
                     sc_scale_score=sc_scale_score,
                     mask=mask,
-                    loss=loss,
                 )
 
-                x = tmp[0]
-                if sampling_mode == "sc_training":
-                    loss = tmp[2]
+                traj.append(x)
 
-                if sampling_mode == "sc_training":
-                    with torch.no_grad():
-                        t_ext = self._extend_t(n, t)
-                        score = self.vf_to_score(x, v_base, t_ext)  # get score from v, [*, dim]
-                        std_eps = torch.sqrt(2 * gt_step * sc_scale_noise * dt)
-                        diff = (x - (v_base + gt_step * score) * dt)
-                        base_logprop -= (diff ** 2).mean(dim = (1,2)) / (2 * std_eps) - n * 3 * (math.log(std_eps) + 0.5 * math.log(2 * math.pi))
-
-            if sampling_mode == "sc_training":
-                return x, loss, base_logprop
-            return x
+            return traj
 
     def get_gt(
         self,
