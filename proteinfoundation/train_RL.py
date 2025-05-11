@@ -243,33 +243,6 @@ class PredictionCollector(Callback):
     #         print(f"Collected {len(self.all_preds)} lists of Tensors in rank 0")
     #         print(self.all_preds)
 
-def train_epoch(rank, model, base_model, dataloader, result_queue, log_queue):
-    
-    model.to(f'cuda:{rank}')
-    base_model.to(f'cuda:{rank}')
-
-    predictions = []
-    for batch_idx,batch in enumerate(dataloader):
-        predictions.append(model.predict_step(batch, batch_idx))
-
-    designability = Designability(device=f'cuda:{rank}')
-
-    total_designable = 0
-
-    total_scRMSD = 0
-
-    for pred in predictions:
-        rewards = designability.scRMSD(pred)
-        total_designable += (rewards < 2).sum().item()
-        total_scRMSD += rewards.sum().item()
-        print(rewards)
-    #     rewards = torch.log(torch.sigmoid(8 - 4 * rewards))
-    #     log_likelihood_base = base_model.get_log_likelihood(pred)
-    #     model.get_log_likelihood(pred, update_grad = True, grad_weight = rewards + log_likelihood_base - 1)
-
-    # result_queue.put([p.grad for p in model.params])
-    log_queue.put([total_designable, total_scRMSD])
-
 if __name__ == "__main__":
     load_dotenv()
 
@@ -331,7 +304,7 @@ if __name__ == "__main__":
     ), "Designability cannot be computed together with FID"
 
     # Set root path for this inference run
-    root_path = f"./inference/{config_name}"
+    root_path = f"./RL/{config_name}"
     if os.path.exists(root_path):
         shutil.rmtree(root_path)
     os.makedirs(root_path, exist_ok=True)
@@ -385,8 +358,6 @@ if __name__ == "__main__":
     lens_sample, nsamples = split_nlens(
         nlens_dict, max_nsamples=cfg.max_nsamples, n_replica=1
     )  # Assume running on 1 GPU
-    for i in range(len(nsamples)):
-        nsamples[i] = nsamples[i] // num_gpus
     if cfg.fold_cond:
         len_cath_codes = parse_len_cath_code(cfg)
     else:
@@ -409,42 +380,41 @@ if __name__ == "__main__":
     flat_dict = {k: str(v) for k, v in flat_dict.items()}
     columns = list(flat_dict.keys())
 
-    mp.set_start_method('spawn', force=True)  # 'spawn' is safe
-
     optim = model.configure_optimizers()
+
+    model.to('cuda')
+    base_model.to('cuda')
+
+    designability = Designability(device=f'cuda')
+
+    writer = SummaryWriter(log_dir=root_path+"/tensorboard")
 
     for epoch in range(50000):
 
         optim.zero_grad()
 
-        processes = []
-        result_queue = mp.Queue()
-        log_queue = mp.Queue()
+        trainer = L.Trainer(accelerator="gpu", devices=1)
+        predictions = trainer.predict(model, dataloader)
 
-        for rank in range(num_gpus):
-            
-            p = mp.Process(target=train_epoch, args=(rank, model, base_model, dataloader, result_queue, log_queue))
-            p.start()
-            processes.append(p)
+        total_designable = 0
 
-        # Collect results from all processes
-        all_results = []
-        for _ in range(num_gpus):
-            grads = result_queue.get()
-            for p,grad in zip(model.params, grads):
-                p.grad += grad / num_gpus
+        total_scRMSD = 0
 
-        for _ in range(num_gpus):
-            result = log_queue.get()
-            total_designable += result[0]
-            total_scRMSD += result[1]
-
-        print(f"Epoch {epoch}: {total_designable/(nsamples[0] * num_gpus)} designability, {total_scRMSD/(nsamples[0] * num_gpus)} avg_scRMSD")
-
-        for p in processes:
-            p.join()
+        for pred in predictions:
+            rewards = designability.scRMSD(pred[-1].cuda() * 10.0)
+            total_designable += (rewards < 2).sum().item()
+            total_scRMSD += rewards.sum().item()
+            rewards = torch.log(torch.sigmoid(8 - 4 * rewards))
+            log_likelihood_base = base_model.get_log_likelihood(pred)
+            model.get_log_likelihood(pred, update_grad = True, grad_weight = rewards + log_likelihood_base - 1)
 
         optim.step()
+
+        print(f"Epoch {epoch}: {total_designable/(nsamples[0])} designability, {total_scRMSD/(nsamples[0])} avg_scRMSD")
+
+        torch.save(model.state_dict(), root_path + f"/epoch_{epoch}.pt")
+        writer.add_scalar("designability", total_designable/(nsamples[0]), epoch)
+        writer.add_scalar("avg_scRMSD", total_scRMSD/(nsamples[0]), epoch)
 
         # Sample the model
         # predictions = []

@@ -539,7 +539,9 @@ class R3NFlowMatcher:
                     mask=mask,
                 )
 
-            return x
+                traj.append(x)
+
+            return traj
 
     def get_gt(
         self,

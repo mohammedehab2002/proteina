@@ -2,7 +2,7 @@ defaults:
   - inference_base
   - _self_
 
-run_name_: ucond_200M_tri
+run_name_: no_IS
 ckpt_path: ./checkpoints/
 ckpt_name: proteina_v1.1_DFS_200M_tri.ckpt
 
@@ -13,4 +13,5 @@ sampling_caflow:
   sc_scale_noise: 1.0  # noise scale, used if sampling_mode == "sc"
 
 nres_lens: [50]
+nsamples_per_len: 128
 max_nsamples: 32
