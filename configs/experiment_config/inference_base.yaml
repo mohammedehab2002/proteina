@@ -12,7 +12,7 @@ max_len:
 step_len:
 
 # Number of samples per protein length
-nsamples_per_len: 2
+nsamples_per_len: 64
 
 # Maximum number of samples in each batch
 max_nsamples: 32

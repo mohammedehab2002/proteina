@@ -46,6 +46,10 @@ from lightning.pytorch.callbacks import Callback
 
 import torch.distributed as dist
 
+import torch.multiprocessing as mp
+
+from torch.utils.tensorboard import SummaryWriter
+
 # Length dataloader for validation and inference
 class GenDataset(Dataset):
     """
@@ -239,8 +243,37 @@ class PredictionCollector(Callback):
     #         print(f"Collected {len(self.all_preds)} lists of Tensors in rank 0")
     #         print(self.all_preds)
 
+def train_epoch(rank, model, base_model, dataloader, result_queue, log_queue):
+    
+    model.to(f'cuda:{rank}')
+    base_model.to(f'cuda:{rank}')
+
+    predictions = []
+    for batch_idx,batch in enumerate(dataloader):
+        predictions.append(model.predict_step(batch, batch_idx))
+
+    designability = Designability(device=f'cuda:{rank}')
+
+    total_designable = 0
+
+    total_scRMSD = 0
+
+    for pred in predictions:
+        rewards = designability.scRMSD(pred)
+        total_designable += (rewards < 2).sum().item()
+        total_scRMSD += rewards.sum().item()
+        print(rewards)
+    #     rewards = torch.log(torch.sigmoid(8 - 4 * rewards))
+    #     log_likelihood_base = base_model.get_log_likelihood(pred)
+    #     model.get_log_likelihood(pred, update_grad = True, grad_weight = rewards + log_likelihood_base - 1)
+
+    # result_queue.put([p.grad for p in model.params])
+    log_queue.put([total_designable, total_scRMSD])
+
 if __name__ == "__main__":
     load_dotenv()
+
+    num_gpus = torch.cuda.device_count()
 
     parser = argparse.ArgumentParser(description="Job info")
     parser.add_argument(
@@ -342,9 +375,9 @@ if __name__ == "__main__":
         model_ag = Proteina.load_from_checkpoint(ckpt_ag_file)
         nn_ag = model_ag.nn
 
+
     model.configure_inference(cfg, nn_ag=nn_ag)
     base_model.configure_inference(cfg, nn_ag=nn_ag)
-    base_model.predict_step = lambda batch, batch_idx: base_model.get_log_likelihood(batch)
     base_model.eval()
 
     # Create length dataset
@@ -352,6 +385,8 @@ if __name__ == "__main__":
     lens_sample, nsamples = split_nlens(
         nlens_dict, max_nsamples=cfg.max_nsamples, n_replica=1
     )  # Assume running on 1 GPU
+    for i in range(len(nsamples)):
+        nsamples[i] = nsamples[i] // num_gpus
     if cfg.fold_cond:
         len_cath_codes = parse_len_cath_code(cfg)
     else:
@@ -374,56 +409,84 @@ if __name__ == "__main__":
     flat_dict = {k: str(v) for k, v in flat_dict.items()}
     columns = list(flat_dict.keys())
 
-    model.base_model = base_model
-
-    designability = Designability()
+    mp.set_start_method('spawn', force=True)  # 'spawn' is safe
 
     optim = model.configure_optimizers()
 
     for epoch in range(50000):
 
+        optim.zero_grad()
+
+        processes = []
+        result_queue = mp.Queue()
+        log_queue = mp.Queue()
+
+        for rank in range(num_gpus):
+            
+            p = mp.Process(target=train_epoch, args=(rank, model, base_model, dataloader, result_queue, log_queue))
+            p.start()
+            processes.append(p)
+
+        # Collect results from all processes
+        all_results = []
+        for _ in range(num_gpus):
+            grads = result_queue.get()
+            for p,grad in zip(model.params, grads):
+                p.grad += grad / num_gpus
+
+        for _ in range(num_gpus):
+            result = log_queue.get()
+            total_designable += result[0]
+            total_scRMSD += result[1]
+
+        print(f"Epoch {epoch}: {total_designable/(nsamples[0] * num_gpus)} designability, {total_scRMSD/(nsamples[0] * num_gpus)} avg_scRMSD")
+
+        for p in processes:
+            p.join()
+
+        optim.step()
+
         # Sample the model
         # predictions = []
         # for batch_idx,batch in enumerate(dataloader):
         #     predictions.append(model.module.predict_step(batch, batch_idx))
-        prediction_collector = PredictionCollector()
-        trainer = L.Trainer(accelerator="gpu", devices=2, strategy="ddp", callbacks = [prediction_collector])
-        trainer.predict(model, dataloader)
-        predictions = prediction_collector.all_preds
 
+        # prediction_collector = PredictionCollector()
+        # trainer = L.Trainer(accelerator="gpu", devices=2, strategy="ddp", callbacks = [prediction_collector])
+        # trainer.predict(model, dataloader)
+        # predictions = prediction_collector.all_preds
+
+        # print(len(predictions), len(predictions[0]), predictions[0][0].shape)
+
+        # trajs_dataset = TrajsDataset(predictions)
+        # print("here")
+        # trajs_dataloader = DataLoader(trajs_dataset, batch_size=1)
+        # trainer = L.Trainer(accelerator="gpu", devices=2, strategy="ddp")
+        # log_likelihood_base = trainer.predict(base_model, trajs_dataloader)
+
+        # optim.zero_grad()
+
+        # total_designable = 0
+
+        # grad_weights = []
+
+        # for i,pred in enumerate(predictions):
+        #     rewards = designability.scRMSD(pred[-1].cuda())
+        #     total_designable += (rewards < 2).sum().item()
+        #     print(rewards)
+        #     rewards = torch.log(torch.sigmoid(8 - 4 * rewards))
+        #     grad_weights.append(rewards + log_likelihood_base[i] - 1)
+
+        # optim.zero_grad()
+        # trainer = L.Trainer(accelerator="gpu", devices=2, strategy="ddp")
+        # rewards_dataset = RewardsDataset(predictions, grad_weights)
+        # rewards_dataloader = DataLoader(rewards_dataset, batch_size=1)
+        # trainer.fit(model, rewards_dataloader)
+        # optim.step()
+
+        # print(f"{total_designable}/{len(predictions) * predictions[0][0].shape[0]} designable")
+
+        # if epoch % 10 == 0:
+        #     torch.save(model.state_dict(), ckpt_path + f"RL/epoch_{epoch}.pt")
         
-
-        print(len(predictions), len(predictions[0]), predictions[0][0].shape)
-
-        trajs_dataset = TrajsDataset(predictions)
-        print("here")
-        trajs_dataloader = DataLoader(trajs_dataset, batch_size=1)
-        trainer = L.Trainer(accelerator="gpu", devices=2, strategy="ddp")
-        log_likelihood_base = trainer.predict(base_model, trajs_dataloader)
-
-        optim.zero_grad()
-
-        total_designable = 0
-
-        grad_weights = []
-
-        for i,pred in enumerate(predictions):
-            rewards = designability.scRMSD(pred[-1].cuda())
-            total_designable += (rewards < 2).sum().item()
-            print(rewards)
-            rewards = torch.log(torch.sigmoid(8 - 4 * rewards))
-            grad_weights.append(rewards + log_likelihood_base[i] - 1)
-
-        optim.zero_grad()
-        trainer = L.Trainer(accelerator="gpu", devices=2, strategy="ddp")
-        rewards_dataset = RewardsDataset(predictions, grad_weights)
-        rewards_dataloader = DataLoader(rewards_dataset, batch_size=1)
-        trainer.fit(model, rewards_dataloader)
-        optim.step()
-
-        print(f"{total_designable}/{len(predictions) * predictions[0][0].shape[0]} designable")
-
-        if epoch % 10 == 0:
-            torch.save(model.state_dict(), ckpt_path + f"RL/epoch_{epoch}.pt")
-        
-        optim.step()
+        # optim.step()

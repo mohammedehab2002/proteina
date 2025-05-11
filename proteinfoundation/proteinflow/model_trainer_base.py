@@ -55,11 +55,10 @@ class ModelTrainerBase(L.LightningModule):
 
         self.base_model = None
 
-        self.automatic_optimization = False
-
     def configure_optimizers(self):
+        self.params = [p for p in self.parameters() if p.requires_grad]
         optimizer = torch.optim.Adam(
-            [p for p in self.parameters() if p.requires_grad], lr=1e-5
+            self.params, lr=1e-5
         )
 
         return optimizer
@@ -575,12 +574,10 @@ class ModelTrainerBase(L.LightningModule):
             fixed_structure_mask = fixed_structure_mask,
         )
 
-    def get_log_likelihood(self, traj, update_grad = False):
+    def get_log_likelihood(self, traj, update_grad = False, grad_weight = None):
         """
         Computes the log likelihood of a trajectory.
         """
-        if update_grad:
-            traj, grad_weight = traj
         sampling_args = self.inf_cfg.sampling_caflow
         ts = self.fm.get_schedule(
             mode=self.inf_cfg.schedule.schedule_mode,
@@ -629,7 +626,7 @@ class ModelTrainerBase(L.LightningModule):
                     ts_limit = 0.985
                 if update_grad and ts[step] <= ts_limit:
                     loss_t = - (logprop_t * (grad_weight - detached_logprop_t)).mean()
-                    loss_t.manual_backward()
+                    loss_t.backward()
 
         return logprop
 

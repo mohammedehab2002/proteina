@@ -10,7 +10,7 @@ self_cond: False
 
 sampling_caflow:
   sampling_mode: sc  # "vf" for ODE sampling, "sc" for SDE sampling
-  sc_scale_noise: 1.0  # noise scale, used if sampling_mode == "sc"
+  sc_scale_noise: 0.5  # noise scale, used if sampling_mode == "sc"
 
-nres_lens: [5]
-max_nsamples: 1
+nres_lens: [50]
+max_nsamples: 64

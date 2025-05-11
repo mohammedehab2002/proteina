@@ -22,8 +22,6 @@ from transformers import AutoTokenizer, EsmForProteinFolding
 
 from transformers.models.esm.openfold_utils.feats import atom14_to_atom37
 
-from tqdm import tqdm
-
 def get_args():
     
     argparser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -79,7 +77,7 @@ def get_args():
 
 class Designability:
 
-    def __init__(self):
+    def __init__(self, device):
 
         args = get_args()
 
@@ -113,7 +111,6 @@ class Designability:
 
         hidden_dim = 128
         num_layers = 3
-        device = torch.device("cuda:0" if (torch.cuda.is_available()) else "cpu")
 
         checkpoint = torch.load(checkpoint_path, map_location=device)
         noise_level_print = checkpoint['noise_level']
@@ -139,7 +136,7 @@ class Designability:
         )
         self.esm_model = EsmForProteinFolding.from_pretrained(
             local_dir, local_files_only=True
-        ).cuda()
+        ).to(device)
 
     def proteinMPNN(self, proteins, return_grad = False):
 
@@ -177,7 +174,7 @@ class Designability:
         all_seqs = []
         grads = []
         
-        for ix in tqdm(range(NUM_BATCHES)):
+        for ix in range(NUM_BATCHES):
 
             start = ix*args.batch_size
             end = start + args.batch_size
@@ -208,9 +205,6 @@ class Designability:
                     # print(torch.autograd.grad(log_probs, X, grad_outputs=torch.ones_like(log_probs, device='cuda'))[0][0])
                     # grads.append(grad)
 
-        print("Inside proteinMPNN")
-        print(torch.cuda.memory_summary(device='cuda', abbreviated=False))
-
         return all_seqs, grads
 
     def scRMSD(self, proteins, return_grad = False):
@@ -223,7 +217,7 @@ class Designability:
             seqs, log_prob_grads = self.proteinMPNN(proteins_copied, return_grad)
         batch_size = min(128, len(seqs))
         rmsd_list = []
-        for i in tqdm(range(0, len(seqs), batch_size)):
+        for i in range(0, len(seqs), batch_size):
             batch_seqs = seqs[i:i+batch_size]
             with torch.no_grad():
                 inputs = self.tokenizer(
