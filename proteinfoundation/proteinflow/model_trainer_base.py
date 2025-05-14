@@ -55,10 +55,10 @@ class ModelTrainerBase(L.LightningModule):
 
         self.base_model = None
 
-    def configure_optimizers(self):
+    def configure_optimizers(self, lr):
         self.params = [p for p in self.parameters() if p.requires_grad]
         optimizer = torch.optim.Adam(
-            self.params, lr=1e-5
+            self.params, lr=lr
         )
 
         return optimizer
@@ -494,7 +494,7 @@ class ModelTrainerBase(L.LightningModule):
             fixed_sequence_mask = None
 
 
-        x = self.generate(
+        return self.generate(
             nsamples=batch["nsamples"],
             n=batch["nres"],
             dt=batch["dt"].to(dtype=torch.float32),
@@ -516,7 +516,6 @@ class ModelTrainerBase(L.LightningModule):
             fixed_sequence_mask = fixed_sequence_mask,
             fixed_structure_mask = fixed_structure_mask,
         )
-        return x
 
     def generate(
         self,
@@ -581,7 +580,7 @@ class ModelTrainerBase(L.LightningModule):
         sampling_args = self.inf_cfg.sampling_caflow
         ts = self.fm.get_schedule(
             mode=self.inf_cfg.schedule.schedule_mode,
-            nsteps=len(traj)-1,
+            nsteps=400,
             p1=self.inf_cfg.schedule.schedule_p,
         )
         t_eval = ts[:-1]  # [nsteps], last one is 1 not used to eval but to define dt
@@ -591,41 +590,45 @@ class ModelTrainerBase(L.LightningModule):
             param=sampling_args["gt_p"],
             clamp_val=sampling_args["gt_clamp_val"],
         )
-        nsamples = traj[0].shape[0]
-        n = traj[0].shape[1]
+        nsamples = traj[0][0].shape[0]
+        n = traj[0][0].shape[1]
         device = self.device
         logprop = torch.zeros(nsamples, device=device)
-        traj[0] = traj[0].to(device)
         with torch.set_grad_enabled(update_grad):
             
             for step in tqdm(range(len(t_eval))):
 
-                traj[step+1] = traj[step+1].to(device)
+                ts_limit = 0.99
+                if self.inf_cfg.schedule.schedule_mode in ["cos_sch_v_snr", "edm"]:
+                    ts_limit = 0.985
+
+                if ts[step] > ts_limit:
+                    break
+
+                x_t = traj[step][0].to(device)
+                x_t1 = traj[step][1].to(device)
 
                 t = ts[step] * torch.ones(nsamples, device=device)  # [nsamples]
                 dt = ts[step + 1] - ts[step]  # float
                 gt_step = gt[step]  # float
 
-                traj[step].requires_grad_(update_grad)
+                x_t.requires_grad_(update_grad)
                 nn_in = {
-                    "x_t": traj[step].to(device),
+                    "x_t": x_t,
                     "t": t,
                     "mask": torch.ones(nsamples, n, device=device).bool(),
                 }
 
                 x_1_pred, v = self.predict_clean_n_v_w_guidance(nn_in)
                 t_ext = self.fm._extend_t(n, t)
-                score = self.fm.vf_to_score(traj[step], v, t_ext)  # get score from v, [*, dim]
+                score = self.fm.vf_to_score(x_t, v, t_ext)  # get score from v, [*, dim]
                 std_eps = torch.sqrt(2 * gt_step * sampling_args["sc_scale_noise"] * dt)
-                diff = (traj[step+1] - (v + gt_step * score) * dt)
-                logprop_t = (diff ** 2).mean(dim = (1,2)) / (2 * std_eps) - n * 3 * (math.log(std_eps) + 0.5 * math.log(2 * math.pi))
+                diff = (x_t1 - x_t - (v + gt_step * score) * dt) / std_eps
+                logprop_t = (diff ** 2).sum(dim = (1,2)) / 2
                 detached_logprop_t = logprop_t.detach()
                 logprop -= detached_logprop_t
-                ts_limit = 0.99
-                if self.inf_cfg.schedule.schedule_mode in ["cos_sch_v_snr", "edm"]:
-                    ts_limit = 0.985
                 if update_grad and ts[step] <= ts_limit:
-                    loss_t = - (logprop_t * (grad_weight - detached_logprop_t)).mean()
+                    loss_t = - (logprop_t * grad_weight).mean()
                     loss_t.backward()
 
         return logprop

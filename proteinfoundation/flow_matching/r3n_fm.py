@@ -231,7 +231,7 @@ class R3NFlowMatcher:
         # Euler step
         t_ext = self._extend_t(n, t)  # [*, n]
 
-        x_t_updated, _ = self.step_euler(
+        x_t_updated, x_t_nocentering, log_likelihood = self.step_euler(
             x_t=x_t,
             v=v,
             t=t_ext,
@@ -246,7 +246,8 @@ class R3NFlowMatcher:
             self._mask_and_zero_com(
                 x_t_updated, mask
             ),  # Equivalent to centering the update vector since x_t is centered
-            t + dt,
+            x_t_nocentering,
+            log_likelihood,
         )
 
     def step_euler(
@@ -324,14 +325,14 @@ class R3NFlowMatcher:
         if (
             sampling_mode == "vf" or t_element > 1.0
         ):
-            return x_t + v * dt, t + dt
+            return x_t + v * dt, x_t + v * dt, torch.zeros(x_t.shape[0], device=x_t.device)
 
         if sampling_mode == "sc":
             score = self.vf_to_score(x_t, v, t)  # get score from v, [*, dim]
             eps = torch.randn(x_t.shape, dtype=x_t.dtype, device=x_t.device)  # [*, dim]
             std_eps = torch.sqrt(2 * gt * sc_scale_noise * dt)
             delta_x = (v + gt * score) * dt + std_eps * eps
-            return x_t + delta_x, t + dt
+            return x_t + delta_x, x_t + delta_x, (eps ** 2).sum(dim = (1,2)) / 2
 
     def vf_to_score(
         self,
@@ -483,11 +484,12 @@ class R3NFlowMatcher:
         )
 
         with torch.no_grad():
+            tot_log_likelihood = torch.zeros((nsamples,), device=device)
             x = self.sample_reference(
                 n, shape=(nsamples,), device=device, mask=mask, dtype=dtype
             )  # [nsamples, n, 3]
 
-            traj = [x]
+            traj = []
             
             if fixed_sequence_mask is not None:
                 x_motif = (x_motif - mean_w_mask(x_motif, fixed_sequence_mask, keepdim=True)) * fixed_sequence_mask[..., None]
@@ -522,12 +524,16 @@ class R3NFlowMatcher:
 
                 # Accomodate last few steps
                 if ts[step] > 0.99:
-                    sampling_mode = "vf"
-                if schedule_mode in ["cos_sch_v_snr", "edm"]:
-                    if ts[step] > 0.985:
-                        sampling_mode = "vf"
+                    break
+                # if ts[step] > 0.99:
+                #     sampling_mode = "vf"
+                # if schedule_mode in ["cos_sch_v_snr", "edm"]:
+                #     if ts[step] > 0.985:
+                #         sampling_mode = "vf"
 
-                x, _ = self.simulation_step(
+                traj.append([x])
+
+                x, x_nocentering, log_likelihood = self.simulation_step(
                     x_t=x,
                     v=v,
                     t=t,
@@ -539,9 +545,12 @@ class R3NFlowMatcher:
                     mask=mask,
                 )
 
-                traj.append(x)
+                traj[-1].append(x_nocentering)
+                tot_log_likelihood -= log_likelihood
 
-            return traj
+            traj.append(x)
+
+            return traj, tot_log_likelihood
 
     def get_gt(
         self,

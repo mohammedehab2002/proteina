@@ -270,6 +270,11 @@ if __name__ == "__main__":
         default=0,
         help="Leave as 0.",
     )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=1e-5,
+    )
     args = parser.parse_args()
     logger.info(" ".join(sys.argv))
 
@@ -304,7 +309,7 @@ if __name__ == "__main__":
     ), "Designability cannot be computed together with FID"
 
     # Set root path for this inference run
-    root_path = f"./RL/{config_name}"
+    root_path = f"./RL/{config_name}_{args.lr}"
     if os.path.exists(root_path):
         shutil.rmtree(root_path)
     os.makedirs(root_path, exist_ok=True)
@@ -312,6 +317,13 @@ if __name__ == "__main__":
     # Load model from checkpoint
     ckpt_path = cfg.ckpt_path
     ckpt_file = os.path.join(ckpt_path, cfg.ckpt_name)
+    start_epoch = 0
+    while True:
+        if os.path.isfile(root_path + f"/epoch_{start_epoch}.pt"):
+            ckpt_path = root_path + f"/epoch_{start_epoch}.pt"
+        else:
+            break
+        start_epoch += 1
     logger.info(f"Using checkpoint {ckpt_file}")
     assert os.path.exists(ckpt_file), f"Not a valid checkpoint {ckpt_file}"
 
@@ -380,16 +392,14 @@ if __name__ == "__main__":
     flat_dict = {k: str(v) for k, v in flat_dict.items()}
     columns = list(flat_dict.keys())
 
-    optim = model.configure_optimizers()
-
-    model.to('cuda')
-    base_model.to('cuda')
+    optim = model.configure_optimizers(args.lr)
+    print("Learning Rate,", args.lr)
 
     designability = Designability(device=f'cuda')
 
     writer = SummaryWriter(log_dir=root_path+"/tensorboard")
 
-    for epoch in range(50000):
+    for epoch in range(start_epoch, 50000):
 
         optim.zero_grad()
 
@@ -400,21 +410,36 @@ if __name__ == "__main__":
 
         total_scRMSD = 0
 
-        for pred in predictions:
+        total_loss = 0
+
+        model.to('cuda')
+
+        for pred,log_likelihood_model in predictions:
             rewards = designability.scRMSD(pred[-1].cuda() * 10.0)
             total_designable += (rewards < 2).sum().item()
+            print("batch designability", (rewards < 2).to(torch.float32).mean().item())
             total_scRMSD += rewards.sum().item()
             rewards = torch.log(torch.sigmoid(8 - 4 * rewards))
+            base_model.to('cuda')
             log_likelihood_base = base_model.get_log_likelihood(pred)
-            model.get_log_likelihood(pred, update_grad = True, grad_weight = rewards + log_likelihood_base - 1)
+            base_model.to('cpu')
+            log_likelihood_model = log_likelihood_model.to('cuda')
+            total_loss += (rewards + log_likelihood_base - log_likelihood_model).sum().item()
+            print("rewards", rewards)
+            print("log likelihood", log_likelihood_base - log_likelihood_model)
+            print("batch loss", (rewards + log_likelihood_base - log_likelihood_model).mean().item())
+            model.get_log_likelihood(pred, update_grad = True, grad_weight = rewards + log_likelihood_base - log_likelihood_model - 1)
 
         optim.step()
 
-        print(f"Epoch {epoch}: {total_designable/(nsamples[0])} designability, {total_scRMSD/(nsamples[0])} avg_scRMSD")
+        tot_samples = len(predictions) * nsamples[0]
+
+        print(f"Epoch {epoch}: {total_loss/tot_samples} loss, {total_designable/tot_samples} designability, {total_scRMSD/tot_samples} avg_scRMSD")
 
         torch.save(model.state_dict(), root_path + f"/epoch_{epoch}.pt")
-        writer.add_scalar("designability", total_designable/(nsamples[0]), epoch)
-        writer.add_scalar("avg_scRMSD", total_scRMSD/(nsamples[0]), epoch)
+        writer.add_scalar("designability", total_designable/tot_samples, epoch)
+        writer.add_scalar("avg_scRMSD", total_scRMSD/tot_samples, epoch)
+        writer.add_scalar("loss", total_loss/tot_samples, epoch)
 
         # Sample the model
         # predictions = []
